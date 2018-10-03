@@ -109,7 +109,14 @@ thread_create(void (*fn) (void *), void *parg)
 	t_array[t_num].thread_context.uc_stack.ss_sp = t_array[t_num].original_sp;
 	t_array[t_num].thread_context.uc_stack.ss_size = THREAD_MIN_STACK;
 	t_array[t_num].thread_context.uc_stack.ss_flags = 0;
-	makecontext( &t_array[t_num].thread_context, (void (*)(void)) &thread_stub, 2, fn ,parg);
+	void *sp = t_array[t_num].thread_context.uc_stack.ss_sp;
+	sp += t_array[t_num].thread_context.uc_stack.ss_size;
+	sp -= (unsigned long long)sp%16;
+	sp -= 8;
+	t_array[t_num].thread_context.uc_mcontext.gregs[REG_RSP] = (greg_t)sp;
+	t_array[t_num].thread_context.uc_mcontext.gregs[REG_RIP] = (greg_t)&thread_stub;
+	t_array[t_num].thread_context.uc_mcontext.gregs[REG_RDI] = (greg_t)fn;
+	t_array[t_num].thread_context.uc_mcontext.gregs[REG_RSI] = (greg_t)parg;
 	++num_threads;
 	return t_num;
 }

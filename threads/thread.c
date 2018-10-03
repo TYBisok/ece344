@@ -31,13 +31,6 @@ struct t_node{
 	struct t_node *prev;
 };
 
-/* This is the exited queue structure*/
-
-struct exited_queue{
-	struct t_node *head;
-	struct t_node *end;
-};
-
 /* This is the wait queue structure */
 
 struct wait_queue {
@@ -51,50 +44,13 @@ volatile static unsigned num_threads;//number of active (run or ready) threads
 
 static thread t_array[THREAD_MAX_THREADS];//array of available threads
 
-static struct exited_queue eq;
-
-void exited_queue_push(Tid tid){
-	struct t_node *new_node = (struct t_node *)malloc(sizeof(struct t_node));
-	assert(new_node);
-	if (eq.head == NULL) eq.head = new_node;
-	else eq.end->next = new_node;
-	new_node->prev = eq.end;
-	new_node->next = NULL;	
-	new_node->tid = tid;
-	new_node->sp = t_array[tid].original_sp;
-	eq.end = new_node;
-	t_array[tid].state = T_EXITED;
-}
-
-void exited_queue_pop(Tid tid){
-	struct t_node *cur = eq.head;
-	while (cur != NULL){
-		if (cur->tid == tid){
-			if (cur->prev == NULL) eq.head = cur->next;
-			else cur->prev->next = cur->next;
-			if (cur->next == NULL) eq.end = cur->prev;
-			else cur->next->prev = cur->prev;
-			free(cur->sp);
-			t_array[cur->tid].state = T_EMPTY;
-			free(cur);
-			break;
+void clear_exited_threads(){
+	for (unsigned i = 1; i < THREAD_MAX_THREADS; ++i){
+		if (t_array[i].state == T_EXITED){
+			t_array[i].state = T_EMPTY;
+			free(t_array[i].original_sp);
 		}
-		cur = cur->next;
 	}
-}
-
-void exited_queue_clear(){
-	struct t_node *cur = eq.head;
-	struct t_node *next = NULL;
-	while (cur != NULL){
-		next = cur->next;
-		free(cur->sp);
-		t_array[cur->tid].state = T_EMPTY;
-		free(cur);
-		cur = next;
-	}
-	eq.end = NULL;
-	eq.head = NULL;
 }
 
 void
@@ -108,7 +64,7 @@ thread_stub(void (*thread_main)(void *), void *arg)
 	assert(ret == THREAD_NONE);
 	// all threads are done, so process should exit
 	//deallocate all stack, empty the thread array
-	exited_queue_clear();
+	clear_exited_threads();
 	exit(0);
 }
 
@@ -136,7 +92,6 @@ thread_id()
 Tid
 thread_create(void (*fn) (void *), void *parg)
 {
-	//exited_queue_clear();
 	if (num_threads >= THREAD_MAX_THREADS) return THREAD_NOMORE;
 	unsigned t_num;
 	for (unsigned i = 0; i < THREAD_MAX_THREADS; ++i){
@@ -162,14 +117,24 @@ thread_create(void (*fn) (void *), void *parg)
 Tid
 thread_yield(Tid want_tid)
 {
-	//exited_queue_clear();
 	if (want_tid == THREAD_SELF){
 		return thread_id();
 	}
 	else if (want_tid == THREAD_ANY){
 		if (num_threads == 1){
-			if (thread_id() == 0)return THREAD_NONE;
-			else return thread_yield(0);
+			if (thread_id() == 0){
+				if (t_array[0].state == T_RUN) return THREAD_NONE;
+				else {
+					want_tid = (want_tid + 1) % THREAD_MAX_THREADS;
+					while(t_array[want_tid].state != T_READY){
+						want_tid = (want_tid + 1) % THREAD_MAX_THREADS;
+					}
+				}
+			}
+			else {
+				if (t_array[0].state == T_READY) return thread_yield(0);
+				else return THREAD_NONE;
+			}
 		}
 		else {
 			want_tid = (want_tid + 1) % THREAD_MAX_THREADS;
@@ -184,11 +149,7 @@ thread_yield(Tid want_tid)
 												(t_array[want_tid].state==T_RUN));
 	if (!want_tid_in_range) return THREAD_INVALID;
 	if (!want_tid_ready){
-		if (t_array[want_tid].state == T_EXITED){
-			free(t_array[want_tid].original_sp);
-			t_array[want_tid].state = T_EMPTY;
-			//exited_queue_pop(want_tid);
-		}
+		clear_exited_threads();
 		return THREAD_INVALID;
 	}
 	else{
@@ -201,7 +162,6 @@ thread_yield(Tid want_tid)
 			t_array[thread_id()].thread_context = uc;
 			t_array[want_tid].state = T_RUN;
 			current_thread = want_tid;
-		//	swapcontext(&t_array[thread_id()].thread_context,&t_array[want_tid].thread_context);
 			uc = t_array[want_tid].thread_context;
 			err = setcontext(&uc);
 		}
@@ -212,13 +172,10 @@ thread_yield(Tid want_tid)
 Tid
 thread_exit()
 {
-	//TBD();
-	//if (num_threads == 0) return THREAD_NONE;
-	if (thread_id() == 0) return THREAD_NONE;
+	if (num_threads == 1) return THREAD_NONE;
 	else {
 		t_array[thread_id()].state = T_EXITED;
 		--num_threads;
-		//exited_queue_push(thread_id());
 		Tid ret = thread_yield(THREAD_ANY);
 		return ret;
 	}
@@ -227,14 +184,12 @@ thread_exit()
 Tid
 thread_kill(Tid tid)
 {
-	//TBD();
 	if (tid <= 0 || tid > THREAD_MAX_THREADS || tid == thread_id())
 		return THREAD_INVALID;
 	else {
 		if (t_array[tid].state != T_READY) return THREAD_INVALID;
 		t_array[tid].state = T_EXITED;
 		--num_threads;
-		//exited_queue_push(thread_id());
 	}
 	return tid;
 }

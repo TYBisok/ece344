@@ -7,3 +7,11 @@ test_point
 test_sorted_points
 words
 test_wc
+point
+tester.log
+tester.out
+wc-big.res
+wc-big.txt
+wc-small.out
+launch.json
+setting.json

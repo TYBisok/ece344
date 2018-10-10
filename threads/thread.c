@@ -24,26 +24,19 @@ typedef struct{
 
 /* This is the node in thread queues */
 
-struct t_node{
+typedef struct t_node{
 	Tid tid;
 	void *sp;
 	struct t_node *next;
 	struct t_node *prev;
-};
+}t_node;
 
 /* This is the ready queue structure */
 
-struct thread_queue{
-	struct t_node *head;
-	struct t_node *end;
-};
-
-/* This is the wait queue structure */
-
-struct wait_queue {
-	/* ... Fill this in Lab 3 ... */
-};
-
+typedef struct wait_queue{
+	t_node *head;
+	t_node *end;
+}thread_queue;
 
 volatile static Tid current_thread;//Thread id of current thread
 
@@ -51,12 +44,13 @@ volatile static unsigned num_threads;//number of active (run or ready) threads
 
 static thread t_array[THREAD_MAX_THREADS];//array of available threads
 
-static struct thread_queue rq;//ready queue of threads
+static thread_queue rq;//ready queue of threads
 
 /* Pushes a thread into the end of a thread queue */
 
-void thread_queue_push(Tid id, void * sp, struct thread_queue *tq){
-	struct t_node *new_node = (struct t_node *)malloc(sizeof(struct t_node));
+void thread_queue_push(Tid id, void * sp, thread_queue *tq){
+	int enabled = interrupts_set(0);
+	t_node *new_node = (t_node *)malloc(sizeof(t_node));
 	assert(new_node);
 	new_node->sp = sp;
 	new_node->tid = id;
@@ -65,18 +59,22 @@ void thread_queue_push(Tid id, void * sp, struct thread_queue *tq){
 	if(tq->head == NULL) tq->head = new_node;
 	else tq->end->next = new_node;
 	tq->end = new_node;
+	interrupts_set(enabled);
 }
 
 /* Pops a given thread from ready queue */
 
-Tid thread_queue_pop(Tid id, struct thread_queue *tq){
+Tid thread_queue_pop(Tid id, thread_queue *tq){
+	int enabled = interrupts_set(0);
 	if (id == THREAD_SELF) id = thread_id();
 	else if (id == THREAD_ANY){
-		if ( (t_array[thread_id()].state == T_RUN) && num_threads == 1)
-		 return THREAD_NONE;
+		if ( (t_array[thread_id()].state == T_RUN) && num_threads == 1){
+			interrupts_set(enabled);
+			return THREAD_NONE;
+		}
 		else id = tq->head->tid;
 	}
-	struct t_node *cur = tq->head;
+	t_node *cur = tq->head;
 	while (cur != NULL){
 		if (cur->tid == id){
 			if (cur->prev == NULL)tq->head = cur->next;
@@ -85,27 +83,31 @@ Tid thread_queue_pop(Tid id, struct thread_queue *tq){
 			else cur->next->prev = cur->prev;
 			Tid ret = cur->tid;
 			free(cur);
+			interrupts_set(enabled);
 			return ret;
 		}
 		cur = cur->next;
 	}
+	interrupts_set(enabled);
 	return THREAD_INVALID;
 }
 
 void clear_exited_threads(){
+	int enabled = interrupts_set(0);
 	for (unsigned i = 1; i < THREAD_MAX_THREADS; ++i){
 		if (t_array[i].state == T_EXITED){
 			t_array[i].state = T_EMPTY;
 			free(t_array[i].original_sp);
 		}
 	}
+	interrupts_set(enabled);
 }
 
 void
 thread_stub(void (*thread_main)(void *), void *arg)
 {
 	Tid ret;
-
+	interrupts_on();
 	thread_main(arg); // call thread_main() function with arg
 	ret = thread_exit();
 	// we should only get here if we are the last thread.
@@ -140,7 +142,11 @@ thread_id()
 Tid
 thread_create(void (*fn) (void *), void *parg)
 {
-	if (num_threads >= THREAD_MAX_THREADS) return THREAD_NOMORE;
+	int enabled = interrupts_set(0);
+	if (num_threads >= THREAD_MAX_THREADS) {
+		interrupts_set(enabled);
+		return THREAD_NOMORE;
+	}
 	unsigned t_num;
 	for (unsigned i = 0; i < THREAD_MAX_THREADS; ++i){
 		if (t_array[i].state == T_EMPTY || t_array[i].state == T_EXITED){
@@ -168,21 +174,25 @@ thread_create(void (*fn) (void *), void *parg)
 	t_array[t_num].thread_context.uc_mcontext.gregs[REG_RSI] = (greg_t)parg;
 	++num_threads;
 	thread_queue_push(t_num,sp,&rq);
+	interrupts_set(enabled);
 	return t_num;
 }
 
 Tid
 thread_yield(Tid want_tid)
 {
+	int enabled = interrupts_set(0);
 	bool want_tid_popped = false;
 	if (t_array[thread_id()].state != T_EXITED){
 		clear_exited_threads();
 	}
 	if (want_tid == THREAD_SELF){
+		interrupts_set(enabled);
 		return thread_id();
 	}
 	else if (want_tid == THREAD_ANY){
 		if (num_threads == 1 && t_array[thread_id()].state == T_RUN){
+			interrupts_set(enabled);
 			return THREAD_NONE;
 		}
 		else {
@@ -194,7 +204,10 @@ thread_yield(Tid want_tid)
 	bool want_tid_in_range = (want_tid > -1 && want_tid < THREAD_MAX_THREADS);
 	bool want_tid_ready = (want_tid_in_range && ((t_array[want_tid].state==T_READY)||
 												(t_array[want_tid].state==T_RUN)) );
-	if (!want_tid_ready)return THREAD_INVALID;
+	if (!want_tid_ready){
+		interrupts_set(enabled);
+		return THREAD_INVALID;
+		}
 	struct ucontext uc;
 	volatile bool swapped = false;//avoid swap back
 	int err = getcontext(&uc);
@@ -211,6 +224,7 @@ thread_yield(Tid want_tid)
 		if(!want_tid_popped)thread_queue_pop(want_tid,&rq);
 		err = setcontext(&uc);
 	}
+	interrupts_set(enabled);
 	return want_tid;
 }
 
@@ -219,8 +233,10 @@ thread_exit()
 {
 	if (num_threads == 1) return THREAD_NONE;
 	else {
+		int enabled = interrupts_set(0);
 		t_array[thread_id()].state = T_EXITED;
 		--num_threads;
+		interrupts_set(enabled);
 		Tid ret = thread_yield(THREAD_ANY);
 		return ret;
 	}
@@ -229,14 +245,18 @@ thread_exit()
 Tid
 thread_kill(Tid tid)
 {
-	if (tid <= 0 || tid > THREAD_MAX_THREADS || tid == thread_id())
+	int enabled = interrupts_set(0);
+	if (tid <= 0 || tid > THREAD_MAX_THREADS || tid == thread_id()){
+		interrupts_set(enabled);
 		return THREAD_INVALID;
+	}
 	else {
 		if (t_array[tid].state != T_READY) return THREAD_INVALID;
 		t_array[tid].state = T_EXITED;
 		thread_queue_pop(tid, &rq);
 		--num_threads;
 	}
+	interrupts_set(enabled);
 	return tid;
 }
 
@@ -252,16 +272,20 @@ wait_queue_create()
 
 	wq = malloc(sizeof(struct wait_queue));
 	assert(wq);
-
-	TBD();
-
+	wq->head = wq->end = NULL;
 	return wq;
 }
 
 void
 wait_queue_destroy(struct wait_queue *wq)
 {
-	TBD();
+	t_node *cur = wq->head;
+	t_node *next = NULL;
+	while (cur != NULL){
+		next = cur->next;
+		free(cur);
+		cur = next;
+	}
 	free(wq);
 }
 

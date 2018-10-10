@@ -507,7 +507,14 @@ out:
 	/* we expect nr_sleeping is 0 at this point */
 	assert(nr_sleeping == 0);
 	assert(interrupts_enabled());
+
+	/* no thread should be waiting on queue */
 	wait_queue_destroy(queue);
+
+	/* wait for other threads to exit */
+	while (thread_yield(THREAD_ANY) != THREAD_NONE) {
+	}
+	
 	unintr_printf("wakeup test done\n");
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
@@ -535,7 +542,6 @@ test_wait_thread(int num)
 		ret = thread_wait(wait[num-1]);
 		assert(ret == wait[num-1]);
 		assert(interrupts_enabled());
-		assert(ret == num || ret == THREAD_INVALID);
 		spin(rand/10);
 		/* id should print in ascending order, from 1-127 */
 		unintr_printf("id = %d\n", num);

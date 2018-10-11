@@ -13,15 +13,6 @@ typedef enum{
 	T_EMPTY = -5
 }t_state;
 
-/* This is the thread control block */
-
-typedef struct{
-	/* ... Fill this in ... */
-	t_state state;
-	ucontext_t thread_context;
-	void *original_sp;
-}thread;
-
 /* This is the node in thread queues */
 
 typedef struct t_node{
@@ -36,6 +27,15 @@ typedef struct wait_queue{
 	t_node *head;
 	t_node *end;
 }thread_queue;
+
+/* This is the thread control block */
+
+typedef struct{
+	t_state state;
+	thread_queue *wait_queue;
+	ucontext_t thread_context;
+	void *original_sp;
+}thread;
 
 volatile static Tid current_thread;//Thread id of current thread
 
@@ -103,6 +103,8 @@ void clear_exited_threads(){
 		if (t_array[i].state == T_EXITED){
 			t_array[i].state = T_EMPTY;
 			free(t_array[i].original_sp);
+			// wait_queue_destroy(t_array[i].wait_queue);
+			// t_array[i].wait_queue = NULL;
 		}
 	}
 	interrupts_set(enabled);
@@ -118,8 +120,6 @@ thread_stub(void (*thread_main)(void *), void *arg)
 	// we should only get here if we are the last thread.
 	assert(ret == THREAD_NONE);
 	// all threads are done, so process should exit
-	//deallocate all stack, empty the thread array
-	clear_exited_threads();
 	exit(0);
 }
 
@@ -132,6 +132,7 @@ thread_init(void)
 	//initialize array of threads
 	for (int i = 0; i < THREAD_MAX_THREADS; ++i){
 		t_array[i].state = T_EMPTY;
+		// t_array[i].wait_queue = NULL;
 	}
 	t_array[current_thread].state = T_RUN;
 	int err = getcontext(&t_array[current_thread].thread_context);
@@ -166,6 +167,7 @@ thread_create(void (*fn) (void *), void *parg)
 	if(sp == NULL) return THREAD_NOMEMORY;
 	t_array[t_num].original_sp = sp;
 	t_array[t_num].state = T_READY;
+	// t_array[t_num].wait_queue = wait_queue_create();
 	t_array[t_num].thread_context.uc_link = NULL;
 	t_array[t_num].thread_context.uc_stack.ss_sp = t_array[t_num].original_sp;
 	t_array[t_num].thread_context.uc_stack.ss_size = THREAD_MIN_STACK;
@@ -245,9 +247,9 @@ thread_exit()
 	else {
 		t_array[thread_id()].state = T_EXITED;
 		--num_threads;
+		// thread_wakeup(t_array[thread_id()].wait_queue,1);
 		interrupts_set(enabled);
-		Tid ret = thread_yield(THREAD_ANY);
-		return ret;
+		return thread_yield(THREAD_ANY);
 	}
 }
 
@@ -265,6 +267,7 @@ thread_kill(Tid tid)
 		if(t_array[tid].state == T_READY)thread_queue_pop(tid, &rq);
 		else thread_queue_pop(tid,wq);
 		t_array[tid].state = T_EXITED;
+		// thread_wakeup(t_array[tid].wait_queue,1);
 		--num_threads;
 	}
 	interrupts_set(enabled);
@@ -317,8 +320,7 @@ thread_sleep(struct wait_queue *queue)
 		thread_queue_push(thread_id(),queue);
 		--num_threads;
 		interrupts_set(enabled);
-		Tid ret = thread_yield(THREAD_ANY);
-		return ret;
+		return thread_yield(THREAD_ANY);
 	}
 }
 
@@ -334,13 +336,7 @@ thread_wakeup(struct wait_queue *queue, int all)
 	}
 	if (all){
 		int count = 0;
-		Tid ret;
-		while ((ret = thread_queue_pop_head(queue)) != THREAD_NONE){
-			t_array[ret].state = T_READY;
-			++num_threads;
-			thread_queue_push(ret,&rq);
-			++count;
-		}
+		while (thread_wakeup(queue,0))++count;
 		interrupts_set(enabled);
 		return count;
 	}
@@ -364,8 +360,15 @@ thread_wakeup(struct wait_queue *queue, int all)
 Tid
 thread_wait(Tid tid)
 {
-	TBD();
-	return 0;
+	int enabled = interrupts_set(0);
+	if (tid <= 0 || tid > THREAD_MAX_THREADS || tid == thread_id()
+	|| t_array[tid].state == T_EMPTY || t_array[tid].state == T_EXITED){
+		interrupts_set(enabled);
+		return THREAD_INVALID;
+	}
+	thread_sleep(t_array[tid].wait_queue);
+	interrupts_set(enabled);
+	return tid;
 }
 
 struct lock {

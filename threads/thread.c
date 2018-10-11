@@ -10,7 +10,8 @@ typedef enum{
 	T_RUN = -2,
 	T_SLEEP = -3,
 	T_EXITED = -4,
-	T_EMPTY = -5
+	T_EMPTY = -5,
+	T_KILLED = -6
 }t_state;
 
 /* This is the node in thread queues */
@@ -113,6 +114,7 @@ void clear_exited_threads(){
 void
 thread_stub(void (*thread_main)(void *), void *arg)
 {
+	if(t_array[thread_id()].state == T_KILLED) thread_exit();
 	Tid ret;
 	interrupts_on();
 	thread_main(arg); // call thread_main() function with arg
@@ -211,7 +213,8 @@ thread_yield(Tid want_tid)
 	else;
 	bool want_tid_in_range = (want_tid > -1 && want_tid < THREAD_MAX_THREADS);
 	bool want_tid_ready = (want_tid_in_range && ((t_array[want_tid].state==T_READY)||
-												(t_array[want_tid].state==T_RUN)) );
+												(t_array[want_tid].state==T_RUN)||
+												(t_array[want_tid].state==T_KILLED)) );
 	if (!want_tid_ready){
 		interrupts_set(enabled);
 		return THREAD_INVALID;
@@ -219,6 +222,9 @@ thread_yield(Tid want_tid)
 	struct ucontext uc;
 	volatile bool swapped = false;//avoid swap back
 	int err = getcontext(&uc);
+	if (t_array[thread_id()].state == T_KILLED) {
+		return thread_exit();
+	}
 	if (err == 0 && !swapped){
 		swapped = true;
 		if (t_array[thread_id()].state == T_RUN){
@@ -226,7 +232,7 @@ thread_yield(Tid want_tid)
 			thread_queue_push(thread_id(),&rq);
 		}
 		t_array[thread_id()].thread_context = uc;
-		t_array[want_tid].state = T_RUN;
+		if(t_array[want_tid].state != T_KILLED)t_array[want_tid].state = T_RUN;
 		current_thread = want_tid;
 		uc = t_array[want_tid].thread_context;
 		if(!want_tid_popped)thread_queue_pop(want_tid,&rq);
@@ -263,12 +269,11 @@ thread_kill(Tid tid)
 	}
 	else {
 		if (t_array[tid].state != T_READY && 
-			t_array[tid].state != T_SLEEP) return THREAD_INVALID;
-		if(t_array[tid].state == T_READY)thread_queue_pop(tid, &rq);
-		else thread_queue_pop(tid,wq);
-		t_array[tid].state = T_EXITED;
-		// thread_wakeup(t_array[tid].wait_queue,1);
-		--num_threads;
+			t_array[tid].state != T_SLEEP) {
+				interrupts_set(enabled);
+				return THREAD_INVALID;
+			}
+		t_array[tid].state = T_KILLED;
 	}
 	interrupts_set(enabled);
 	return tid;

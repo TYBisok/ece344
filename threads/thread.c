@@ -354,7 +354,6 @@ thread_wakeup(struct wait_queue *queue, int all)
 		else {
 			if(t_array[ret].state != T_KILLED){
 				t_array[ret].state = T_READY;
-				//++num_threads;
 			}
 			++num_threads;
 			thread_queue_push(ret,&rq);
@@ -372,7 +371,8 @@ thread_wait(Tid tid)
 	|| t_array[tid].state == T_EMPTY || t_array[tid].state == T_EXITED){
 		return THREAD_INVALID;
 	}
-	thread_sleep(t_array[tid].wait_queue);
+	Tid ret = thread_sleep(t_array[tid].wait_queue);
+	if (ret == THREAD_NONE) exit(0);
 	return tid;
 }
 

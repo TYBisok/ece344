@@ -377,46 +377,58 @@ thread_wait(Tid tid)
 }
 
 struct lock {
-	/* ... Fill this in ... */
+	bool acquire_status;
+	thread_queue *lock_wq;
 };
 
 struct lock *
 lock_create()
 {
+	int enabled = interrupts_set(0);
 	struct lock *lock;
 
 	lock = malloc(sizeof(struct lock));
 	assert(lock);
 
-	TBD();
-
+	lock->acquire_status = false;
+	lock->lock_wq = wait_queue_create();
+	assert(lock->lock_wq);
+	interrupts_set(enabled);
 	return lock;
 }
 
 void
 lock_destroy(struct lock *lock)
 {
+	int enabled = interrupts_set(0);
 	assert(lock != NULL);
 
-	TBD();
-
+	wait_queue_destroy(lock->lock_wq);
+	interrupts_set(enabled);
 	free(lock);
 }
 
 void
 lock_acquire(struct lock *lock)
 {
+	int enabled = interrupts_set(0);
 	assert(lock != NULL);
 
-	TBD();
+	while(!__sync_bool_compare_and_swap(&(lock->acquire_status), false, true) ){
+		thread_sleep(lock->lock_wq);
+	}
+
+	interrupts_set(enabled);
 }
 
 void
 lock_release(struct lock *lock)
 {
+	int enabled = interrupts_set(0);
 	assert(lock != NULL);
-
-	TBD();
+	lock->acquire_status = false;
+	thread_wakeup(lock->lock_wq,1);
+	interrupts_set(enabled);
 }
 
 struct cv {

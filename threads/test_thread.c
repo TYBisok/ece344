@@ -515,10 +515,11 @@ out:
 	while (thread_yield(THREAD_ANY) != THREAD_NONE) {
 	}
 	
-	unintr_printf("wakeup test done\n");
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
 	assert(minfo_end.hblks == minfo_start.hblks);
+
+	unintr_printf("wakeup test done\n");
 }
 
 static Tid wait[NTHREADS];
@@ -526,7 +527,6 @@ static Tid wait[NTHREADS];
 static void
 test_wait_thread(int num)
 {
-	int ret;
 	int rand = ((double)random())/RAND_MAX * 1000000;
 
 	/* make sure that all threads are created before continuing */
@@ -539,8 +539,7 @@ test_wait_thread(int num)
 	if (num > 0) {
 		assert(interrupts_enabled());
 		/* wait on previous thread */
-		ret = thread_wait(wait[num-1]);
-		assert(ret == wait[num-1]);
+		thread_wait(wait[num-1]);
 		assert(interrupts_enabled());
 		spin(rand/10);
 		/* id should print in ascending order, from 1-127 */
@@ -583,10 +582,12 @@ test_wait(void)
 	for (i = 0; i < NTHREADS; i++) {
 		thread_wait(wait[i]);
 	}
-	unintr_printf("wait test done\n");
+
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
 	assert(minfo_end.hblks == minfo_start.hblks);
+
+	unintr_printf("wait test done\n");
 }
 
 static void
@@ -695,10 +696,12 @@ test_lock()
 	assert(interrupts_enabled());
 	lock_destroy(testlock);
 	assert(interrupts_enabled());
-	unintr_printf("lock test done\n");
+
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
 	assert(minfo_end.hblks == minfo_start.hblks);
+
+	unintr_printf("lock test done\n");
 }
 
 static void
@@ -775,10 +778,12 @@ test_cv_signal()
 	}
 	assert(interrupts_enabled());
 	lock_destroy(testlock);
-	unintr_printf("cv signal test done\n");
+
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
 	assert(minfo_end.hblks == minfo_start.hblks);
+
+	unintr_printf("cv signal test done\n");
 }
 
 static void
@@ -852,8 +857,10 @@ test_cv_broadcast()
 	cv_destroy(testcv_broadcast);
 	lock_destroy(testlock);
 	assert(interrupts_enabled());
-	unintr_printf("cv broadcast test done\n");
+
 	struct mallinfo minfo_end = mallinfo();
 	assert(minfo_end.uordblks == minfo_start.uordblks);
 	assert(minfo_end.hblks == minfo_start.hblks);
+
+	unintr_printf("cv broadcast test done\n");
 }

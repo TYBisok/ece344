@@ -8,7 +8,6 @@ pthread_cond_t buffer_full;
 pthread_cond_t buffer_empty;
 int buffer_in = 0;
 int buffer_out = 0;
-int buffer_count = 0;
 
 struct server {
 	int nr_threads;
@@ -77,18 +76,14 @@ out:
 void thread_main(struct server *sv){
 	while(1){
 		pthread_mutex_lock(&lock);
-		while(buffer_count <= 0)
+		while((buffer_in - buffer_out + sv->max_requests) % sv->max_requests == 0 && !sv->exiting)
 			pthread_cond_wait(&buffer_empty,&lock);
 		int connfd = (sv->request_buffer)[buffer_out];
-		buffer_out = (buffer_out + 1) % (sv->max_requests);
-		--buffer_count;
-		if (buffer_count == (sv->max_requests-1) )
+		if ((buffer_in - buffer_out + sv->max_requests) % sv->max_requests == sv->max_requests - 1)
 			pthread_cond_signal(&buffer_full);
+		buffer_out = (buffer_out + 1) % (sv->max_requests);
 		pthread_mutex_unlock(&lock);
-		if (sv->exiting == 1){
-			++buffer_count;
-			pthread_exit(NULL);
-		}
+		if(sv->exiting)pthread_exit(NULL);
 		do_server_request(sv,connfd);
 	}
 }
@@ -107,7 +102,7 @@ server_init(int nr_threads, int max_requests, int max_cache_size)
 
 	sv = malloc(sizeof(struct server));
 	sv->nr_threads = nr_threads;
-	sv->max_requests = max_requests;
+	sv->max_requests = max_requests + 1;
 	sv->max_cache_size = max_cache_size;
 	sv->exiting = 0;
 	
@@ -122,7 +117,7 @@ server_init(int nr_threads, int max_requests, int max_cache_size)
 		}
 
 		if(max_requests <= 0) sv->request_buffer = NULL;
-		else sv->request_buffer = (int *)malloc(sizeof(int)*(max_requests));
+		else sv->request_buffer = (int *)malloc(sizeof(int)*(max_requests + 1));
 
 	}
 
@@ -146,13 +141,12 @@ server_request(struct server *sv, int connfd)
 		/*  Save the relevant info in a buffer and have one of the
 		 *  worker threads do the work. */
 		pthread_mutex_lock(&lock);
-		while (buffer_count >= sv->max_requests)
+		while ((buffer_in - buffer_out + sv->max_requests) % sv->max_requests == sv->max_requests - 1 && !sv->exiting)
 			pthread_cond_wait(&buffer_full,&lock);
 		(sv->request_buffer)[buffer_in] = connfd;
+		if ((buffer_in - buffer_out + sv->max_requests) % sv->max_requests == 0)
+			pthread_cond_broadcast(&buffer_empty);
 		buffer_in = (buffer_in + 1) % (sv->max_requests);
-		++buffer_count;
-		if (buffer_count == 1)
-			pthread_cond_signal(&buffer_empty);
 		pthread_mutex_unlock(&lock);
 	}
 }
@@ -165,7 +159,6 @@ server_exit(struct server *sv)
 	 * pthread_join in this function so that the main server thread waits
 	 * for all the worker threads to exit before exiting. */
 	sv->exiting = 1;
-	buffer_count = 100;
 	pthread_cond_broadcast(&buffer_empty);
 	for(unsigned i = 0; i < sv->nr_threads; ++i){
 		pthread_join(*sv->worker_threads[i],NULL);

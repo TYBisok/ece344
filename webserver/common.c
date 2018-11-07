@@ -219,17 +219,45 @@ open_clientfd(char *hostname, int port)
 {
 	int clientfd;
 	struct hostent *hp;
+	struct hostent hent;
+	size_t buf_len;
+	char* buf;
+	int rc, h_errno_local;
 	struct sockaddr_in serveraddr;
 
 	SYS(clientfd = socket(AF_INET, SOCK_STREAM, 0));
 
 	/* Fill in the server's IP address and port */
-	DNS(hp = gethostbyname(hostname));
+	/* Loop is necessary to grow buffer if it's not currently big enough for
+	 * gethostbyname_r */
+	buf_len = 1024;
+	do {
+		buf = Malloc(buf_len);
+		rc = gethostbyname_r(hostname, &hent, buf, buf_len, &hp, &h_errno_local);
+		if (ERANGE == rc) {
+			/* Buffer is too small, so double size */
+			free(buf);
+			buf_len *= 2;
+		} else if (0 != rc) {
+			fprintf(stderr, "%s: line %d: gethostbyname_r: DNS error %d %d. "
+				"Check your hostname.\n", __FUNCTION__, __LINE__, rc,
+				h_errno_local);
+			exit(1);
+		}
+	} while (0 != rc);
+	if (NULL == hp || NULL == hp->h_addr) {
+		fprintf(stderr, "%s: line %d: hp is invalid. Check your hostname.\n",
+			__FUNCTION__, __LINE__);
+		exit(1);
+	}
 
 	bzero((char *)&serveraddr, sizeof(serveraddr));
 	serveraddr.sin_family = AF_INET;
 	bcopy((char *)hp->h_addr,
 	      (char *)&serveraddr.sin_addr.s_addr, hp->h_length);
+	/* Documentation makes no mention of when buf is safe to be freed,
+	 * but it should be safe to free now since we're done with hp. */
+	free(buf);
 	serveraddr.sin_port = htons(port);
 
 	/* Establish a connection with the server */

@@ -58,21 +58,6 @@ file_data_free(struct file_data *data)
 	free(data);
 }
 
-/* deep copy a non-NULL terminating char array */
-static inline char *c_array_deep_dup(char *array, int size);
-
-/* hash function used in cache */
-static inline int djb2(request_cache *cache, char *key);
-
-/* initialize an empty cache */
-static request_cache * cache_init(void);
-
-/* lookup entry in cache */
-static cache_entry *cache_lookup(request_cache *cache, char *key);
-
-/* insert entry into cache */
-static cache_entry *cache_insert(struct server *sv, struct file_data *entry_data);
-
 static inline char *c_array_deep_dup(char *array, int size){
 	char *ret = (char *)malloc(sizeof(char)*size);
 	assert(ret);
@@ -93,7 +78,7 @@ static inline int djb2(request_cache *cache, char *key){
     return abs(hash % (cache->size));
 }
 
-static request_cache * cache_init(void){
+static inline request_cache * cache_init(void){
 	request_cache *cache = (request_cache *)malloc(sizeof(request_cache));
 	assert(cache);
 	cache->file_size_count = 0;

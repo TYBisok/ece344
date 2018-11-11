@@ -59,7 +59,7 @@ file_data_free(struct file_data *data)
 }
 
 /* deep copy a non-NULL terminating char array */
-static char *c_array_deep_dup(char *array, int size);
+static inline char *c_array_deep_dup(char *array, int size);
 
 /* hash function used in cache */
 static inline int djb2(request_cache *cache, char *key);
@@ -73,9 +73,10 @@ static cache_entry *cache_lookup(request_cache *cache, char *key);
 /* insert entry into cache */
 static cache_entry *cache_insert(struct server *sv, struct file_data *entry_data);
 
-static char *c_array_deep_dup(char *array, int size){
+static inline char *c_array_deep_dup(char *array, int size){
 	char *ret = (char *)malloc(sizeof(char)*size);
-	for (int i = 0; i < size; ++i) ret[i] = array[i];
+	assert(ret);
+	memcpy(ret,array,size);
 	return ret;
 }
 
@@ -175,9 +176,6 @@ do_server_request(struct server *sv, int connfd)
 		}
 		/* send file to client */
 		request_sendfile(rq);
-	out:
-		request_destroy(rq);
-		file_data_free(data);
 	}
 	else {
 		pthread_mutex_lock(&cache_lock);
@@ -192,7 +190,7 @@ do_server_request(struct server *sv, int connfd)
 		else{ //not found in cache
 			pthread_mutex_unlock(&cache_lock);
 			ret = request_readfile(rq);
-			if (!ret) goto out_cache;
+			if (!ret) goto out;
 			pthread_mutex_lock(&cache_lock);
 			search_entry = cache_insert(sv,data);
 			if (search_entry != NULL){ //exists in cache
@@ -203,10 +201,10 @@ do_server_request(struct server *sv, int connfd)
 		pthread_mutex_unlock(&cache_lock);
 		request_sendfile(rq);
 		if (search_entry != NULL) search_entry->in_use = 0;
-	out_cache:
+	}
+out:
 		request_destroy(rq);
 		file_data_free(data);
-	}
 }
 
 /* thread main function */

@@ -11,6 +11,17 @@ pthread_cond_t buffer_empty = PTHREAD_COND_INITIALIZER;
 int buffer_in = 0;
 int buffer_out = 0;
 
+typedef struct lru_node{
+	char *file_name;
+	struct lru_node *prev;
+	struct lru_node *next;
+}lru_node;
+
+typedef struct lru_list{
+	lru_node *head;
+	lru_node *tail;
+}lru_list;
+
 typedef struct cache_entry{
 	struct file_data *entry_data;
 	int in_use;
@@ -21,6 +32,7 @@ typedef struct request_cache{
 	int size;
 	int file_size_count; //total size of files stored in cache
 	cache_entry **table;
+	lru_list *lru;
 }request_cache;
 
 struct server {
@@ -35,6 +47,61 @@ struct server {
 };
 
 /* static functions */
+
+/* push a request to the head of lru list */
+static void lru_push_head(lru_node *new_node,lru_list *list){
+	new_node->next = list->head;
+	new_node->prev = NULL;
+	if (list->tail == NULL)list->tail = new_node;
+	else list->head->prev = new_node;
+	list->head = new_node;
+}
+
+/* pop a request from lru list */
+static lru_node *lru_pop(char *key,lru_list *list){
+	lru_node *cur = list->head;
+	while(cur != NULL){
+		if(strcmp(cur->file_name,key)==0){
+			if (cur->prev == NULL)list->head = cur->next;
+			else cur->prev->next = cur->next;
+			if (cur->next == NULL)list->tail = cur->prev;
+			else cur->next->prev = cur->prev;
+			return cur;
+		}
+		cur = cur->next;
+	}
+	return NULL;
+}
+
+/* pop the tail of lru list */
+static lru_node *lru_pop_tail(lru_list *list){
+	lru_node *old_tail = list->tail;
+	if(old_tail == NULL) return NULL;
+	if(old_tail->prev == NULL)list->head = NULL;
+	else old_tail->prev->next = NULL;
+	list->tail = old_tail->prev;
+	return old_tail;
+}
+
+/* bring a request to the head of lru */
+static lru_node *lru_bubble_up(char *key,lru_list *list){
+	lru_node *node = lru_pop(key,list);
+	lru_push_head(node,list);
+	return node;
+}
+
+/* destroys a lru list data structure */
+static void lru_destroy(lru_list *list){
+	lru_node *cur = list->head;
+	lru_node *next = NULL;
+	while(cur != NULL){
+		next = cur->next;
+		free(cur->file_name);
+		free(cur);
+		cur = next;
+	}
+	free(list);
+}
 
 /* initialize file data */
 static struct file_data *
@@ -58,14 +125,17 @@ file_data_free(struct file_data *data)
 	free(data);
 }
 
-static inline char *c_array_deep_dup(char *array, int size){
-	char *ret = (char *)malloc(sizeof(char)*size);
-	assert(ret);
-	memcpy(ret,array,size);
-	return ret;
-}
+/* lookup entry in cache */
+static cache_entry *cache_lookup(request_cache *cache, const char *key);
 
-static inline int djb2(request_cache *cache, char *key){
+/* insert entry into cache */
+static cache_entry *cache_insert(struct server *sv, struct file_data *entry_data);
+
+/* evict entries in cache until total size of size_to_evict is freed
+   return 1 on success, 0 on failure */
+static int cache_evict(request_cache *cache, int size_to_evict);
+
+static inline int djb2(request_cache *cache, const char *key){
 	int hash = 2*strlen(key)+1;
 	int char_int;
 	int char_count;
@@ -78,17 +148,19 @@ static inline int djb2(request_cache *cache, char *key){
     return abs(hash % (cache->size));
 }
 
-static inline request_cache * cache_init(void){
+static request_cache * cache_init(void){
 	request_cache *cache = (request_cache *)malloc(sizeof(request_cache));
 	assert(cache);
 	cache->file_size_count = 0;
 	cache->size = CACHE_TABLE_SIZE;
+	assert(cache->lru = (lru_list*)malloc(sizeof(lru_list)));
+	cache->lru->head = cache->lru->tail = NULL;
 	assert(cache->table = (cache_entry **)malloc(sizeof(cache_entry *) * cache->size));
 	memset(cache->table,0,cache->size);
 	return cache;
 }
 
-static cache_entry *cache_lookup(request_cache *cache, char *key){
+static cache_entry *cache_lookup(request_cache *cache, const char *key){
 	int bin = djb2(cache,key);
 	for (cache_entry* cur = cache->table[bin];cur != NULL;cur = cur->next)
 		if (strcmp(cur->entry_data->file_name,key)==0) return cur;
@@ -102,28 +174,67 @@ static cache_entry * cache_insert(struct server *sv, struct file_data *entry_dat
 	cache_entry *search_entry = cache_lookup(sv->cache,key);
 	if (search_entry != NULL) return NULL;
 	else{
-		if (sv->cache->file_size_count + size - sv->max_cache_size > 0){
-			return NULL;
-		} 
+		int evict_success = cache_evict(sv->cache,sv->cache->file_size_count + size - sv->max_cache_size);
+		if(!evict_success) return NULL;
 		else {
 			int bin = djb2(sv->cache,key);
 			cache_entry *new_entry = (cache_entry *)malloc(sizeof(cache_entry));
 			assert(new_entry);
 			new_entry->entry_data = file_data_init();
 			new_entry->entry_data->file_name = strdup(key);
-			new_entry->entry_data->file_buf = c_array_deep_dup(entry_data->file_buf,size);
+			new_entry->entry_data->file_buf = strdup(entry_data->file_buf);
 			new_entry->entry_data->file_size = size;
-			new_entry->in_use = 1;
+			new_entry->in_use = 0;
 			new_entry->next = sv->cache->table[bin];
 			sv->cache->table[bin] = new_entry;
 			sv->cache->file_size_count += size;
+			lru_node *new_node = (lru_node *)malloc(sizeof(lru_node));
+			new_node->file_name = strdup(key);
+			lru_push_head(new_node,sv->cache->lru);
 			return new_entry;
 		}
 	}
 }
 
+static int cache_evict(request_cache *cache, int size_to_evict){
+	const int old_size = size_to_evict;
+	if (size_to_evict <= 0)return 1;
+	else {
+		lru_node *cur = cache->lru->tail;
+		while (size_to_evict > 0 &&cur != NULL){
+			char *key = cache->lru->tail->file_name;
+			cache_entry *delete_entry = cache_lookup(cache,key);
+			if (delete_entry->in_use) return 0;
+			size_to_evict -= delete_entry->entry_data->file_size;
+		}
+		size_to_evict = old_size;
+		while (size_to_evict > 0 && cache->lru->tail != NULL){
+			char *key = cache->lru->tail->file_name;
+			cache_entry *delete_entry = cache_lookup(cache,key);
+			if (delete_entry->in_use) break;
+			int bin = djb2(cache,key);
+			cache_entry *prev = NULL;
+			cache_entry *cur_entry = cache->table[bin];
+			while(cur_entry != delete_entry){
+				prev = cur_entry;
+				cur_entry = cur_entry->next;
+			}
+			if (prev == NULL) cache->table[bin] = delete_entry->next;
+			else prev->next = delete_entry->next;
+			// size_to_evict -= delete_entry->entry_data->file_size;
+			cache->file_size_count -= delete_entry->entry_data->file_size;
+			file_data_free(delete_entry->entry_data);
+			free(delete_entry);
+			lru_node *evict_node = lru_pop_tail(cache->lru);
+			free(evict_node->file_name);
+			free(evict_node);
+		}
+		return 1;
+	}
+}
 
 static void cache_destroy(request_cache *cache){
+	lru_destroy(cache->lru);
 	for(int i = 0; i < 3571; ++i){
 		cache_entry *cur = cache->table[i];
 		cache_entry *next = NULL;
@@ -167,10 +278,11 @@ do_server_request(struct server *sv, int connfd)
 		cache_entry * search_entry = cache_lookup(sv->cache,data->file_name);
 		if (search_entry != NULL){ //exists in cache
 			assert(strcmp(search_entry->entry_data->file_name,data->file_name) == 0);
-			search_entry->in_use = 1;
+			search_entry->in_use++;
 			data->file_size = search_entry->entry_data->file_size;
-			data->file_buf = c_array_deep_dup(search_entry->entry_data->file_buf,data->file_size);
+			data->file_buf = strdup(search_entry->entry_data->file_buf);
 			request_set_data(rq,data);
+			lru_bubble_up(data->file_name,sv->cache->lru);
 		}
 		else{ //not found in cache
 			pthread_mutex_unlock(&cache_lock);
@@ -180,16 +292,21 @@ do_server_request(struct server *sv, int connfd)
 			search_entry = cache_insert(sv,data);
 			if (search_entry != NULL){ //exists in cache
 				assert(strcmp(search_entry->entry_data->file_name,data->file_name) == 0);
-				search_entry->in_use = 1;
+				search_entry->in_use++;
+				lru_bubble_up(data->file_name,sv->cache->lru);
 			}
 		}
 		pthread_mutex_unlock(&cache_lock);
 		request_sendfile(rq);
-		if (search_entry != NULL) search_entry->in_use = 0;
+		if (search_entry != NULL) {
+			pthread_mutex_lock(&cache_lock);
+			search_entry->in_use--;
+			pthread_mutex_unlock(&cache_lock);
+		}
 	}
 out:
-		request_destroy(rq);
-		file_data_free(data);
+	request_destroy(rq);
+	file_data_free(data);
 }
 
 /* thread main function */

@@ -298,11 +298,7 @@ do_server_request(struct server *sv, int connfd)
 		}
 		pthread_mutex_unlock(&cache_lock);
 		request_sendfile(rq);
-		if (search_entry != NULL) {
-			pthread_mutex_lock(&cache_lock);
-			search_entry->in_use--;
-			pthread_mutex_unlock(&cache_lock);
-		}
+		if (search_entry != NULL) search_entry->in_use--;
 	}
 out:
 	request_destroy(rq);

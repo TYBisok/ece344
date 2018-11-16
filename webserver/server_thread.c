@@ -2,6 +2,7 @@
 #include "server_thread.h"
 #include "common.h"
 #include <pthread.h>
+#include <semaphore.h>
 
 #define CACHE_TABLE_SIZE 3571
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -33,6 +34,7 @@ typedef struct request_cache{
 	int file_size_count; //total size of files stored in cache
 	cache_entry **table;
 	lru_list *lru;
+	sem_t **readfile_sync;
 }request_cache;
 
 struct server {
@@ -57,19 +59,20 @@ static void lru_push_head(lru_node *new_node,lru_list *list){
 	list->head = new_node;
 }
 
+/* pop a request referenced by pointer of lru list */
+static inline lru_node *lru_pop_ptr(lru_node *node, lru_list *list){
+	if(node == NULL) return NULL;
+	if(node->prev == NULL)list->head = node->next;
+	else node->prev->next = node->next;
+	if(node->next == NULL)list->tail = node->prev;
+	else node->next->prev = node->prev;
+	return node;
+}
+
 /* pop a request from lru list */
 static lru_node *lru_pop(char *key,lru_list *list){
-	lru_node *cur = list->head;
-	while(cur != NULL){
-		if(strcmp(cur->file_name,key)==0){
-			if (cur->prev == NULL)list->head = cur->next;
-			else cur->prev->next = cur->next;
-			if (cur->next == NULL)list->tail = cur->prev;
-			else cur->next->prev = cur->prev;
-			return cur;
-		}
-		cur = cur->next;
-	}
+	for(lru_node *cur = list->head; cur != NULL; cur = cur->next)
+		if(strcmp(cur->file_name,key)==0) return lru_pop_ptr(cur,list);
 	return NULL;
 }
 
@@ -155,7 +158,12 @@ static request_cache * cache_init(void){
 	cache->size = CACHE_TABLE_SIZE;
 	assert(cache->lru = (lru_list*)malloc(sizeof(lru_list)));
 	cache->lru->head = cache->lru->tail = NULL;
-	assert(cache->table = (cache_entry **)malloc(sizeof(cache_entry *) * cache->size));
+	assert(cache->table = (cache_entry **)malloc(sizeof(cache_entry *) * CACHE_TABLE_SIZE));
+	assert(cache->readfile_sync = (sem_t **)malloc(sizeof(sem_t*) * CACHE_TABLE_SIZE));
+	for(int i = 0; i < CACHE_TABLE_SIZE; ++i){
+		assert(cache->readfile_sync[i] = (sem_t*)malloc(sizeof(sem_t)));
+		sem_init(cache->readfile_sync[i],0,1);
+	}
 	memset(cache->table,0,cache->size);
 	return cache;
 }
@@ -206,6 +214,7 @@ static int cache_evict(request_cache *cache, int size_to_evict){
 			cache_entry *delete_entry = cache_lookup(cache,key);
 			if (delete_entry->in_use) return 0;
 			size_to_evict -= delete_entry->entry_data->file_size;
+			cur = cur->prev;
 		}
 		size_to_evict = old_size;
 		while (size_to_evict > 0 && cache->lru->tail != NULL){
@@ -235,8 +244,10 @@ static int cache_evict(request_cache *cache, int size_to_evict){
 
 static void cache_destroy(request_cache *cache){
 	lru_destroy(cache->lru);
-	for(int i = 0; i < 3571; ++i){
+	for(int i = 0; i < CACHE_TABLE_SIZE; ++i){
 		cache_entry *cur = cache->table[i];
+		sem_destroy(cache->readfile_sync[i]);
+		free(cache->readfile_sync[i]);
 		cache_entry *next = NULL;
 		while (cur != NULL){
 			next = cur->next;
@@ -245,6 +256,7 @@ static void cache_destroy(request_cache *cache){
 			cur = next;
 		}
 	}
+	free(cache->readfile_sync);
 	free(cache);
 }
 static void
@@ -285,11 +297,14 @@ do_server_request(struct server *sv, int connfd)
 			lru_bubble_up(data->file_name,sv->cache->lru);
 		}
 		else{ //not found in cache
+			// int bin = djb2(sv->cache,data->file_name);
 			pthread_mutex_unlock(&cache_lock);
+			// sem_wait(sv->cache->readfile_sync[bin]);
 			ret = request_readfile(rq);
 			if (!ret) goto out;
 			pthread_mutex_lock(&cache_lock);
 			search_entry = cache_insert(sv,data);
+			// sem_post(sv->cache->readfile_sync[bin]);
 			if (search_entry != NULL){ //exists in cache
 				assert(strcmp(search_entry->entry_data->file_name,data->file_name) == 0);
 				search_entry->in_use++;

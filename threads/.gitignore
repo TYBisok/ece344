@@ -11,3 +11,5 @@ test_wait_kill
 test_lock
 test_cv_signal
 test_cv_broadcast
+.vscode/
+

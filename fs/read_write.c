@@ -4,6 +4,8 @@
 #include "block.h"
 #include "inode.h"
 
+#define MAX_FILE_SIZE 34376597504
+
 /* given logical block number, read the corresponding physical block into block.
  * return physical block number.
  * returns 0 if physical block does not exist.
@@ -200,19 +202,26 @@ testfs_write_data(struct inode *in, const char *buf, off_t start, size_t size)
 	const size_t ori_size = size;
 
 	if (block_ix + size > BLOCK_SIZE) {
-		if ((ret = testfs_allocate_block(in, block_nr, block)) < 0) return ret;
+		if ((ret = testfs_allocate_block(in, block_nr, block)) < 0)
+			return ret;
 		memcpy(block + block_ix, buf, BLOCK_SIZE - block_ix);
 		write_blocks(in->sb, block, ret, 1);
 		size -= BLOCK_SIZE - block_ix;
 		buf += BLOCK_SIZE - block_ix;
+		start += BLOCK_SIZE - block_ix;
+		in->in.i_size = MAX(in->in.i_size, start);
 		block_ix = 0;
 		++block_nr;
 		while (size > BLOCK_SIZE){
-			if ((ret = testfs_allocate_block(in, block_nr, block)) < 0) return ret;
+			if ((ret = testfs_allocate_block(in, block_nr, block)) < 0) {
+				return ret;
+			}
 			memcpy(block, buf, BLOCK_SIZE);
 			write_blocks(in->sb, block, ret, 1);
 			size -= BLOCK_SIZE;
 			buf += BLOCK_SIZE;
+			start += BLOCK_SIZE;
+			in->in.i_size = MAX(in->in.i_size, start);
 			++block_nr;
 		}
 	}
@@ -223,11 +232,11 @@ testfs_write_data(struct inode *in, const char *buf, off_t start, size_t size)
 	memcpy(block + block_ix, buf, size);
 	write_blocks(in->sb, block, ret, 1);
 	/* increment i_size by the number of bytes written. */
-	if (ori_size > 0)
-		in->in.i_size = MAX(in->in.i_size, start + (off_t) ori_size);
+	if (size > 0)
+		in->in.i_size = MAX(in->in.i_size, start + (off_t) size);
 	in->i_flags |= I_FLAGS_DIRTY;
 	/* return the number of bytes written or any error */
-	return size;
+	return MIN(ori_size,(size_t)MAX_FILE_SIZE - (size_t)start);
 }
 
 int
